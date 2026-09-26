@@ -69,3 +69,95 @@ groups:
           summary: "Elevated credential lifecycle transition errors"
           description: "More than 10 credential lifecycle transition errors in 15m. See docs/runbook-alerts.md#ethoscredentiallifecycleanomalies"
           runbook: "docs/runbook-alerts.md#ethoscredentiallifecycleanomalies"
+
+  # ── Issue #590: Alert Rules for Critical Events ──────────────────────────────
+  - name: ethos-critical-events
+    rules:
+      - alert: EthosVaultReleaseSurge
+        expr: increase(ethos_protocol_releases_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual surge in vault releases"
+          description: "More than 10 vault releases observed in a 5-minute window on {{ $labels.instance }}. May indicate TTL misconfiguration or an attack. See docs/runbook-alerts.md#ethosvaultreleasesurge"
+          runbook: "docs/runbook-alerts.md#ethosvaultreleasesurge"
+
+      - alert: EthosCriticalErrorRateSpiked
+        expr: |
+          (rate(ethos_protocol_request_errors_total[5m])
+            / clamp_min(rate(ethos_protocol_http_requests_total[5m]), 1))
+          > 0.10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ethos-Protocol API critical error rate (>10%)"
+          description: "Error rate has been above 10% for 2m on {{ $labels.instance }}. Immediate investigation required. See docs/runbook-alerts.md#ethoscriticalerrorrate"
+          runbook: "docs/runbook-alerts.md#ethoscriticalerrorrate"
+
+  # ── Issue #591: Canary Deployment Alerts ─────────────────────────────────────
+  - name: ethos-canary-deployment
+    rules:
+      - alert: EthosCanaryRollbackTriggered
+        expr: increase(ethos_protocol_canary_rollbacks_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Canary deployment rolled back automatically"
+          description: "A canary deployment for {{ $labels.service }} was rolled back due to metric thresholds being breached. See docs/runary-deployments.md and docs/runbook-alerts.md#ethoscanaryrollback"
+          runbook: "docs/runbook-alerts.md#ethoscanaryrollback"
+
+      - alert: EthosCanaryHighErrorRate
+        expr: ethos_protocol_canary_error_rate > 0.05
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Canary deployment error rate elevated"
+          description: "Canary deployment {{ $labels.deployment_id }} for {{ $labels.service }} has error rate above 5% for 3m. Automatic rollback may be imminent."
+          runbook: "docs/runbook-alerts.md#ethoscanaryerrorrate"
+
+  # ── Issue #592: Blue-Green Deployment Alerts ──────────────────────────────────
+  - name: ethos-blue-green-deployment
+    rules:
+      - alert: EthosBlueGreenSlotUnhealthy
+        expr: ethos_protocol_bluegreen_slot_health{health="unhealthy"} == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blue-green deployment slot is unhealthy"
+          description: "The {{ $labels.slot }} slot for deployment {{ $labels.deployment_id }} has been unhealthy for 2m. Rollback may be needed. See docs/runbook-alerts.md#ethosbluegreenslothealth"
+          runbook: "docs/runbook-alerts.md#ethosbluegreenslothealth"
+
+      - alert: EthosBlueGreenRollbackTriggered
+        expr: increase(ethos_protocol_bluegreen_rollbacks_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blue-green deployment was rolled back"
+          description: "A blue-green deployment rollback was triggered for {{ $labels.service }}. Investigate the inactive slot before re-attempting. See docs/runbook-alerts.md#ethosbluegreen"
+          runbook: "docs/runbook-alerts.md#ethosbluegreen"
+
+  # ── Issue #593: Automated Rollback Alerts ─────────────────────────────────────
+  - name: ethos-automated-rollback
+    rules:
+      - alert: EthosDeploymentAutoRolledBack
+        expr: increase(ethos_protocol_deployment_rollbacks_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Post-deployment tests failed — automated rollback executed"
+          description: "A deployment of {{ $labels.service }} was automatically rolled back due to post-deployment test failure. Check rollback history at GET /deployments/rollback/history. See docs/runbook-alerts.md#ethosdeploymentautorollback"
+          runbook: "docs/runbook-alerts.md#ethosdeploymentautorollback"
+
+      - alert: EthosRepeatedRollbacks
+        expr: increase(ethos_protocol_deployment_rollbacks_total[1h]) > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Multiple automated rollbacks in the last hour"
+          description: "More than 2 automated deployment rollbacks for {{ $labels.service }} in the last hour. This indicates a systemic issue with the current release. Block further deploys until resolved."
+          runbook: "docs/runbook-alerts.md#ethosrepeatedrollbacks"

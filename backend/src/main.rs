@@ -12,6 +12,22 @@ use tracing_subscriber::EnvFilter;
 
 use ethos_protocol_backend::{
     aml::{check_address, flag_address, list_flags as list_aml_flags, unflag_address, AmlScreener},
+    alert_rules::{
+        create_alert_rule, delete_alert_rule, evaluate_alerts, get_alert_rule, list_alert_rules,
+        list_fired_alerts, AlertRulesState,
+    },
+    automated_rollback::{
+        create_rollback_plan, get_rollback_plan, list_rollback_history, list_rollback_plans,
+        run_post_deployment_tests, trigger_rollback, RollbackState,
+    },
+    blue_green::{
+        create_blue_green_deployment, get_blue_green_deployment, list_blue_green_deployments,
+        report_health as bg_report_health, rollback_blue_green, switch_traffic, BlueGreenState,
+    },
+    canary::{
+        evaluate_canary, get_canary_deployment, rollback_canary, start_canary_deployment,
+        CanaryState,
+    },
     anomaly_detection::{
         configure_seasonality, get_baseline, get_investigation_history, get_seasonal_pattern,
         list_alerts, list_root_causes, list_system_anomalies, observe_metric,
@@ -465,13 +481,107 @@ async fn main() {
         )
         .with_state(webauthn_state);
 
+    // ── Issue #590: Alert Rules for Critical Events ───────────────────────────
+    let alert_rules_state = Arc::new(AlertRulesState::new());
+    let alert_rules_router = Router::new()
+        .route(
+            "/alerts/rules",
+            post(create_alert_rule).get(list_alert_rules),
+        )
+        .route(
+            "/alerts/rules/:id",
+            get(get_alert_rule).delete(delete_alert_rule),
+        )
+        .route("/alerts/evaluate", post(evaluate_alerts))
+        .route("/alerts/fired", get(list_fired_alerts))
+        .with_state(alert_rules_state);
+
+    // ── Issue #591: Canary Deployment ─────────────────────────────────────────
+    let canary_state = Arc::new(CanaryState::new());
+    let canary_router = Router::new()
+        .route(
+            "/deployments/canary",
+            post(start_canary_deployment),
+        )
+        .route(
+            "/deployments/canary/:id",
+            get(get_canary_deployment),
+        )
+        .route(
+            "/deployments/canary/:id/evaluate",
+            post(evaluate_canary),
+        )
+        .route(
+            "/deployments/canary/:id/rollback",
+            post(rollback_canary),
+        )
+        .with_state(canary_state);
+
+    // ── Issue #592: Blue-Green Deployment ─────────────────────────────────────
+    let blue_green_state = Arc::new(BlueGreenState::new());
+    let blue_green_router = Router::new()
+        .route(
+            "/deployments/blue-green",
+            post(create_blue_green_deployment).get(list_blue_green_deployments),
+        )
+        .route(
+            "/deployments/blue-green/:id",
+            get(get_blue_green_deployment),
+        )
+        .route(
+            "/deployments/blue-green/:id/switch",
+            post(switch_traffic),
+        )
+        .route(
+            "/deployments/blue-green/:id/rollback",
+            post(rollback_blue_green),
+        )
+        .route(
+            "/deployments/blue-green/:id/health",
+            post(bg_report_health),
+        )
+        .with_state(blue_green_state);
+
+    // ── Issue #593: Automated Rollback on Test Failure ────────────────────────
+    let rollback_state = Arc::new(RollbackState::new());
+    let rollback_router = Router::new()
+        .route(
+            "/deployments/rollback/plan",
+            post(create_rollback_plan).get(list_rollback_plans),
+        )
+        .route(
+            "/deployments/rollback/plan/:id",
+            get(get_rollback_plan),
+        )
+        .route(
+            "/deployments/rollback/plan/:id/run-tests",
+            post(run_post_deployment_tests),
+        )
+        .route(
+            "/deployments/rollback/plan/:id/rollback",
+            post(trigger_rollback),
+        )
+        .route(
+            "/deployments/rollback/history",
+            get(list_rollback_history),
+        )
+        .with_state(rollback_state);
+
     let app = build_router(state)
         // .merge(acl_router)
         // .merge(custom_metrics_router)
         .merge(anomaly_router)
         .merge(aml_router)
         // .merge(log_router)
-        .merge(webauthn_router);
+        .merge(webauthn_router)
+        // ── Issue #590: Alert Rules for Critical Events ──────────────────────
+        .merge(alert_rules_router)
+        // ── Issue #591: Canary Deployment ────────────────────────────────────
+        .merge(canary_router)
+        // ── Issue #592: Blue-Green Deployment ────────────────────────────────
+        .merge(blue_green_router)
+        // ── Issue #593: Automated Rollback ───────────────────────────────────
+        .merge(rollback_router);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     tracing::info!("listening on {}", listener.local_addr().unwrap());
