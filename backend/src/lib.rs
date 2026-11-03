@@ -1,4 +1,7 @@
 pub mod acl;
+pub mod alert_rules;
+pub mod automated_rollback;
+pub mod blue_green;
 pub mod analytics;
 pub mod anomaly_detection;
 pub mod anomaly_explanation;
@@ -15,6 +18,7 @@ pub mod bulkhead;
 pub mod bulk_operations;
 pub mod cache;
 pub mod cache_partition;
+pub mod canary;
 pub mod cdc_lag;
 pub mod chaos;
 pub mod circuit_breaker;

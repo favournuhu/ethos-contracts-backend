@@ -12,6 +12,22 @@ use tracing_subscriber::EnvFilter;
 
 use ethos_protocol_backend::{
     aml::{check_address, flag_address, list_flags as list_aml_flags, unflag_address, AmlScreener},
+    alert_rules::{
+        create_alert_rule, delete_alert_rule, evaluate_alerts, get_alert_rule, list_alert_rules,
+        list_fired_alerts, AlertRulesState,
+    },
+    automated_rollback::{
+        create_rollback_plan, get_rollback_plan, list_rollback_history, list_rollback_plans,
+        run_post_deployment_tests, trigger_rollback, RollbackState,
+    },
+    blue_green::{
+        create_blue_green_deployment, get_blue_green_deployment, list_blue_green_deployments,
+        report_health as bg_report_health, rollback_blue_green, switch_traffic, BlueGreenState,
+    },
+    canary::{
+        evaluate_canary, get_canary_deployment, rollback_canary, start_canary_deployment,
+        CanaryState,
+    },
     anomaly_detection::{
         configure_seasonality, get_baseline, get_investigation_history, get_seasonal_pattern,
         list_alerts, list_root_causes, list_system_anomalies, observe_metric,
@@ -20,7 +36,15 @@ use ethos_protocol_backend::{
     batching::{AdaptiveBatcher, BatchConfig},
     consensus::NodeCache,
     contract_version_check::{check_contract_version, parse_min_contract_version},
-    // cost_tracking::{allocate_cost, get_cost_report, record_cost_entry, CostState},
+    cost_tracking::{
+        allocate_cost, get_budget_breaches, get_cost_dashboard, get_cost_report,
+        get_gas_cost_report, get_optimization_suggestions, record_cost_entry, record_gas_cost,
+        set_budget_threshold, CostState,
+    },
+    dr_automation::{
+        confirm_dr_action, get_dr_test_schedule, get_rto_rpo, list_playbooks, request_dr_action,
+        DrAutomationState,
+    },
     // Commented out: custom_metrics unused in current build
     // custom_metrics::{
     //     aggregate_custom_metric, create_dashboard_share, get_shared_dashboard, list_custom_metrics,
@@ -409,6 +433,43 @@ async fn main() {
     //     .route("/dashboards/shared/:token", get(get_shared_dashboard))
     //     .with_state(custom_metrics_store);
 
+    // ── Cost tracking routes (#594) ────────────────────────────────────────
+    // Records per-operation cost entries (fiat + gas), surfaces dashboards,
+    // budget thresholds / breach alerts, and optimization suggestions.
+    let cost_state = Arc::new(CostState::new());
+    let cost_router = Router::new()
+        .route(
+            "/admin/cost/entries",
+            post(record_cost_entry),
+        )
+        .route("/admin/cost/report", get(get_cost_report))
+        .route("/admin/cost/allocate", post(allocate_cost))
+        .route(
+            "/admin/cost/budget-thresholds",
+            post(set_budget_threshold),
+        )
+        .route("/admin/cost/budget-breaches", get(get_budget_breaches))
+        .route("/admin/cost/gas", post(record_gas_cost))
+        .route("/admin/cost/gas/report", get(get_gas_cost_report))
+        .route("/admin/cost/dashboard", get(get_cost_dashboard))
+        .route("/admin/cost/optimizations", get(get_optimization_suggestions))
+        .with_state(cost_state);
+
+    // ── Disaster recovery automation routes (#595) ─────────────────────────
+    // Two-phase destructive-action API mirroring docs/disaster-recovery-runbook.md,
+    // plus RTO/RPO targets, DR test schedule, and incident response playbooks.
+    let dr_state = Arc::new(DrAutomationState::new());
+    let dr_router = Router::new()
+        .route("/admin/dr/actions", post(request_dr_action))
+        .route(
+            "/admin/dr/actions/:token/confirm",
+            post(confirm_dr_action),
+        )
+        .route("/admin/dr/rto-rpo", get(get_rto_rpo))
+        .route("/admin/dr/test-schedule", get(get_dr_test_schedule))
+        .route("/admin/dr/playbooks", get(list_playbooks))
+        .with_state(dr_state);
+
     // ── Anomaly detection routes (#544 seasonal, #545 correlation, #546 investigations)
     let anomaly_store = AnomalyStore::new();
     let anomaly_router = Router::new()
@@ -465,13 +526,101 @@ async fn main() {
         )
         .with_state(webauthn_state);
 
+    // ── Issue #590: Alert Rules for Critical Events ───────────────────────────
+    let alert_rules_state = Arc::new(AlertRulesState::new());
+    let alert_rules_router = Router::new()
+        .route(
+            "/alerts/rules",
+            post(create_alert_rule).get(list_alert_rules),
+        )
+        .route(
+            "/alerts/rules/:id",
+            get(get_alert_rule).delete(delete_alert_rule),
+        )
+        .route("/alerts/evaluate", post(evaluate_alerts))
+        .route("/alerts/fired", get(list_fired_alerts))
+        .with_state(alert_rules_state);
+
+    // ── Issue #591: Canary Deployment ─────────────────────────────────────────
+    let canary_state = Arc::new(CanaryState::new());
+    let canary_router = Router::new()
+        .route(
+            "/deployments/canary",
+            post(start_canary_deployment),
+        )
+        .route(
+            "/deployments/canary/:id",
+            get(get_canary_deployment),
+        )
+        .route(
+            "/deployments/canary/:id/evaluate",
+            post(evaluate_canary),
+        )
+        .route(
+            "/deployments/canary/:id/rollback",
+            post(rollback_canary),
+        )
+        .with_state(canary_state);
+
+    // ── Issue #592: Blue-Green Deployment ─────────────────────────────────────
+    let blue_green_state = Arc::new(BlueGreenState::new());
+    let blue_green_router = Router::new()
+        .route(
+            "/deployments/blue-green",
+            post(create_blue_green_deployment).get(list_blue_green_deployments),
+        )
+        .route(
+            "/deployments/blue-green/:id",
+            get(get_blue_green_deployment),
+        )
+        .route(
+            "/deployments/blue-green/:id/switch",
+            post(switch_traffic),
+        )
+        .route(
+            "/deployments/blue-green/:id/rollback",
+            post(rollback_blue_green),
+        )
+        .route(
+            "/deployments/blue-green/:id/health",
+            post(bg_report_health),
+        )
+        .with_state(blue_green_state);
+
+    // ── Issue #593: Automated Rollback on Test Failure ────────────────────────
+    let rollback_state = Arc::new(RollbackState::new());
+    let rollback_router = Router::new()
+        .route(
+            "/deployments/rollback/plan",
+            post(create_rollback_plan).get(list_rollback_plans),
+        )
+        .route(
+            "/deployments/rollback/plan/:id",
+            get(get_rollback_plan),
+        )
+        .route(
+            "/deployments/rollback/plan/:id/run-tests",
+            post(run_post_deployment_tests),
+        )
+        .route(
+            "/deployments/rollback/plan/:id/rollback",
+            post(trigger_rollback),
+        )
+        .route(
+            "/deployments/rollback/history",
+            get(list_rollback_history),
+        )
+        .with_state(rollback_state);
+
     let app = build_router(state)
         // .merge(acl_router)
         // .merge(custom_metrics_router)
         .merge(anomaly_router)
         .merge(aml_router)
         // .merge(log_router)
-        .merge(webauthn_router);
+        .merge(webauthn_router)
+        .merge(cost_router)
+        .merge(dr_router);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     tracing::info!("listening on {}", listener.local_addr().unwrap());
